@@ -1,0 +1,20 @@
+FROM alpine:latest
+
+RUN apk add --no-cache openssh gcc musl-dev make git && \
+    git clone --depth=1 https://github.com/sqlite/sqlite.git && \
+    cd sqlite && ./configure && make sqlite3.c && \
+    gcc -O2 -I. -DSQLITE_ENABLE_DBPAGE_VTAB -o /usr/local/bin/sqlite3_rsync tool/sqlite3_rsync.c sqlite3.c && \
+    rm -rf /sqlite && \
+    apk del gcc musl-dev make git
+
+RUN adduser -D -s /bin/sh sqlsync && \
+    passwd -u sqlsync && \
+    mkdir -p /home/sqlsync/.ssh /data && \
+    chown -R sqlsync:sqlsync /home/sqlsync /data && \
+    ssh-keygen -A
+
+COPY .ssh/id_ed25519.pub /home/sqlsync/.ssh/authorized_keys
+RUN chown sqlsync:sqlsync /home/sqlsync/.ssh/authorized_keys && chmod 600 /home/sqlsync/.ssh/authorized_keys
+
+EXPOSE 22
+CMD ["/usr/sbin/sshd", "-D", "-e"]

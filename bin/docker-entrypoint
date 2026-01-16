@@ -1,0 +1,66 @@
+#!/bin/bash
+set -e
+
+DB_PATH="${DB_PATH:-/rails/storage/production.sqlite3}"
+REMOTE_DB="${REMOTE_DB:-}"
+SYNC_INTERVAL="${SYNC_INTERVAL:-10}"
+SSHPASS="${SSHPASS:-}"
+
+export SSHPASS
+
+sync_to_remote() {
+  if [ -n "$REMOTE_DB" ] && [ -f "$DB_PATH" ]; then
+    echo "[sqlite-sync] Syncing to remote..."
+    if [ -n "$SSHPASS" ]; then
+      sshpass -e sqlite3_rsync "$DB_PATH" "$REMOTE_DB" --ssh /rails/bin/ssh-wrapper 2>&1 || echo "[sqlite-sync] Sync failed, will retry"
+    else
+      sqlite3_rsync "$DB_PATH" "$REMOTE_DB" --ssh /rails/bin/ssh-wrapper 2>&1 || echo "[sqlite-sync] Sync failed, will retry"
+    fi
+  fi
+}
+
+restore_from_remote() {
+  if [ -n "$REMOTE_DB" ]; then
+    echo "[sqlite-sync] Restoring from remote..."
+    if [ -n "$SSHPASS" ]; then
+      sshpass -e sqlite3_rsync "$REMOTE_DB" "$DB_PATH" --ssh /rails/bin/ssh-wrapper 2>&1 || echo "[sqlite-sync] No remote backup found, starting fresh"
+    else
+      sqlite3_rsync "$REMOTE_DB" "$DB_PATH" --ssh /rails/bin/ssh-wrapper 2>&1 || echo "[sqlite-sync] No remote backup found, starting fresh"
+    fi
+  fi
+}
+
+start_sync_loop() {
+  if [ -n "$REMOTE_DB" ]; then
+    echo "[sqlite-sync] Starting sync loop (every ${SYNC_INTERVAL}s)..."
+    (
+      while true; do
+        sleep "$SYNC_INTERVAL"
+        sync_to_remote
+      done
+    ) &
+    SYNC_PID=$!
+    echo "[sqlite-sync] Sync loop PID: $SYNC_PID"
+  fi
+}
+
+cleanup() {
+  echo "[sqlite-sync] Shutting down..."
+  sync_to_remote
+  if [ -n "$SYNC_PID" ]; then
+    kill $SYNC_PID 2>/dev/null || true
+  fi
+  exit 0
+}
+
+trap cleanup SIGTERM SIGINT
+
+restore_from_remote
+
+echo "[sqlite-sync] Running database migrations..."
+bin/rails db:migrate
+
+start_sync_loop
+
+echo "[sqlite-sync] Starting application..."
+exec "$@"
